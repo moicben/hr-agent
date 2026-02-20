@@ -1,8 +1,9 @@
 /**
- * Module 3 - Copywrite
+ * Module 4 - Copywrite
  * 1. Récupère les contacts avec status "enriched" depuis Supabase
  * 2. Pour chaque contact, personnalise le template email via LLM (persona + identité)
  * 3. Stocke chaque email personnalisé dans la table emails (object, content, cta, footer, contact_id)
+ * 4. Met à jour le status du contact à "ready"
  */
 
 import 'dotenv/config';
@@ -47,6 +48,14 @@ async function getEnrichedContacts() {
 async function getIdentityById(identityId) {
   if (!identityId) return null;
   const rows = await supabaseSelect('identities', 'id', identityId, 1);
+  return rows?.[0] ?? null;
+}
+
+/**
+ * Récupère la première identité active (fallback si le contact n'a pas active_identity_id)
+ */
+async function getFirstActiveIdentity() {
+  const rows = await supabaseSelect('identities', 'active', true, 1, 'created_at', true);
   return rows?.[0] ?? null;
 }
 
@@ -132,7 +141,13 @@ async function setContactStatusReady(contactId) {
       }
 
       const identityId = contact.additional_data?.active_identity_id;
-      const identity = await getIdentityById(identityId);
+      let identity = await getIdentityById(identityId);
+      if (!identity) {
+        identity = await getFirstActiveIdentity();
+        if (!identity) {
+          console.warn(`--- Contact ${contact.email}: aucune identité active trouvée, email avec "(aucune identité)" ---`);
+        }
+      }
 
       console.log(`--- Contact: ${contact.email} ---`);
       const personalized = await personalizeEmail(contact, identity, template);

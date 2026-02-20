@@ -1,11 +1,11 @@
-/* 1. Start to process each stored contact with "status" column at "ready"
+/* 1. Proccess each stored contact with status at "ready"
     SPECIFICATIONS:
-    - Select the older contact with "status" "new" in "contacts" table
+    - Select the older contact with "status" "ready" to proceed first
     - Set the "status" column at "processing" for the selected contact
     - Proceed to the next step with the selected contact
 */
 
-/* 2 Send the email with Resend to contact using Resend API
+/* 2 Send an email to the contact using Resend API
     SPECIFICATIONS:
     - Use the email object, content, cta, footer from the personalized email content to send the email to the contact.
     - content, cta, and footer should be integrated in the email content as plain text.
@@ -17,11 +17,3 @@
 
 
 
-
-
-
-
-
-
-
-// 8 Repeat the process for the next contact with "status" column at "new"

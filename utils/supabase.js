@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import fetchRetry from 'fetch-retry';
 import 'dotenv/config';
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -11,10 +12,20 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error(`Missing Supabase credentials: ${missing.join(', ')}`);
 }
 
+// fetch-retry : retries automatiques sur erreurs réseau (ex: "TypeError: fetch failed")
+// Par défaut : 3 retries, backoff exponentiel, retry uniquement sur erreurs réseau
+const fetchWithRetry = fetchRetry(fetch, {
+  retries: 3,
+  retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10000),
+});
+
 export const supabaseClient = createClient(supabaseUrl, supabaseKey, {
   auth: {
     autoRefreshToken: false,
     persistSession: false,
+  },
+  global: {
+    fetch: fetchWithRetry,
   },
 });
 

@@ -8,8 +8,6 @@ import fs from 'fs/promises';
 import path from 'path';
 import dotenv from 'dotenv';
 import { supabaseInsert, supabaseSelect } from '../utils/supabase.js';
-import { filterValidContacts } from '../utils/millionverifier.js';
-import { isFrenchText } from '../utils/french.js';
 import { EMAIL_DOMAINS, AGENT_CONFIG } from '../config.js';
 
 // Filtrage des faux emails (noms de fichiers média)
@@ -113,19 +111,13 @@ async function extractSerpResultsEmails(searchStr, query, domain) {
 }
 
 
-// --- Étape 3a : Pré-filtre français (isFrenchText) ---
-// --- Étape 3b : Vérification MillionVerifier ---
+// --- Étape 3 : Stockage Supabase ---
+// Le filtre français (3.1) et MillionVerifier (3.2) sont dans le module verifier.js (contacts status "new").
 
 /**
- * Pré-filtre: isFrenchText (utils/french.js) - garde les contacts avec texte français.
- * Puis filterValidContacts (utils/millionverifier.js) - ok, catch_all, unknown.
- */
-
-// --- Étape 4 : Stockage Supabase ---
-
-/**
- * Insère les contacts dans Supabase (table "contacts").
+ * Insère les contacts dans Supabase (table "contacts"), status "new".
  * Ignore les emails déjà présents en base.
+ * additional_data : title, description, url.
  * @returns Nombre d'emails effectivement insérés
  */
 async function storeContacts(contacts, source_query) {
@@ -157,23 +149,18 @@ async function storeContacts(contacts, source_query) {
 (async function main() {
   const queries = await extractQueries(INPUT_FILE);
   let totalExtracted = 0;
-  let totalFrench = 0;
-  let totalVerified = 0;
   let totalInserted = 0;
 
   for (const query of queries) {
     console.log(`\n--- Query: "${query}" ---\n`);
 
-    // Recherche séquentielle par domaine (rate limit Serper: 5 req/s)
     const resultsArrays = [];
-
     for (const domain of EMAIL_DOMAINS) {
       const searchStr = `"${query}" "${domain}"`;
       const contacts = await extractSerpResultsEmails(searchStr, query, domain);
       resultsArrays.push(contacts);
     }
 
-    // Fusion et déduplication entre domaines
     const seen = new Set();
     const contacts = resultsArrays.flat().filter(c => {
       const email = c.email.toLowerCase();
@@ -185,37 +172,15 @@ async function storeContacts(contacts, source_query) {
     totalExtracted += contacts.length;
 
     if (contacts.length > 0) {
-      // Pré-filtre français (économie crédits MillionVerifier + temps)
-      const frenchContacts = contacts.filter(c =>
-        isFrenchText([c.title, c.description].filter(Boolean).join(' '))
-      );
-      const rejectedFrench = contacts.length - frenchContacts.length;
-      totalFrench += frenchContacts.length;
-
-      // Étape 3b : Vérification MillionVerifier (ok + catch_all + unknown)
-      const verifiedContacts = frenchContacts.length > 0
-        ? await filterValidContacts(frenchContacts)
-        : [];
-      const rejectedMv = frenchContacts.length - verifiedContacts.length;
-
-      totalVerified += verifiedContacts.length;
-
-      if (verifiedContacts.length > 0) {
-        const inserted = await storeContacts(verifiedContacts, query);
-        totalInserted += inserted;
-        console.log(`Extraits: ${contacts.length} | Français: ${frenchContacts.length} | Vérifiés: ${verifiedContacts.length} | Insérés: ${inserted}`);
-      } else {
-        console.log(`Extraits: ${contacts.length} | Français: ${frenchContacts.length} | Vérifiés: 0 | Rejetés: ${rejectedMv}`);
-      }
+      const inserted = await storeContacts(contacts, query);
+      totalInserted += inserted;
+      console.log(`Extraits: ${contacts.length} | Insérés: ${inserted}`);
     }
   }
 
-  // Récap final
   console.log('\n--- Récap final ---');
   console.log(`Queries traitées: ${queries.length}`);
   console.log(`Emails extraits (total): ${totalExtracted}`);
-  console.log(`Emails français (total): ${totalFrench}`);
-  console.log(`Emails validés (total): ${totalVerified}`);
   console.log(`Emails insérés (total): ${totalInserted}`);
-  console.log('Scraping terminé.');
+  console.log('Scraping terminé. Lancer verifier.js pour 3.1 + 3.2 puis enricher.js.');
 })();

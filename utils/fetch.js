@@ -1,6 +1,6 @@
 /**
  * Extrait les N premiers caractères textuels du body de la page d'accueil d'une URL.
- * Ignore les URLs de réseaux sociaux (facebook, instagram, linkedin, tiktok).
+ * Ignore les URLs de réseaux sociaux et plateformes bloquées (facebook, instagram, linkedin, tiktok, malt.com).
  * @param {string} url - URL à fetcher
  * @param {number} maxChars - Nombre max de caractères à extraire (défaut: 1000)
  * @returns {Promise<string|null>} Texte extrait ou null si skip/erreur
@@ -18,7 +18,8 @@ export async function fetchPageText(url, maxChars = 1000) {
     'facebook.com',
     'instagram.com',
     'linkedin.com',
-    'tiktok.com'
+    'tiktok.com',
+    'malt.com'
   ];
   if (socialPatterns.some(p => lower.includes(p))) {
     return null;
