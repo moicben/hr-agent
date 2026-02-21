@@ -157,7 +157,7 @@ async function enrichContact(contact, logPrefix = '') {
     const url = contact.additional_data?.web || contact.additional_data?.url || '(aucune)';
     console.log(`${logPrefix}  ⚠ contenu vide (URL: ${url}) — fallback sur données contact uniquement`);
   }
-  console.log(`${logPrefix}  → génération persona (LLM)...`);
+  console.log(`${logPrefix}  → création persona (LLM)...`);
   const persona = await generatePersona(contact, webText);
 
   console.log(`${logPrefix}  → génération motivations (LLM)...`);
