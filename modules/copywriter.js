@@ -14,7 +14,65 @@ import { AGENT_CONFIG, EMAIL_TEMPLATE, COPYWRITE_PROMPT } from '../config.js';
 const MEDIA_EXTENSIONS = /\.(avif|jpeg|jpg|png|gif|webp|svg|bmp|tiff|ico|mp4|webm|mov|avi|mp3|wav|flac|pdf)$/i;
 
 /**
- * 1. Récupère les contacts avec status "enriched" depuis Supabase (limité par CONTACTS_TO_COPYWRITE, "*" = sans limite)
+ * Répare un JSON "presque valide" où des caractères de contrôle
+ * (retours ligne, tabulations, etc.) sont insérés bruts dans des strings.
+ */
+function repairJsonControlChars(input) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const code = ch.charCodeAt(0);
+
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+
+    if (ch === '\n') {
+      out += '\\n';
+      continue;
+    }
+
+    if (ch === '\r') {
+      out += '\\r';
+      continue;
+    }
+
+    if (ch === '\t') {
+      out += '\\t';
+      continue;
+    }
+
+    out += (code < 0x20 || code === 0x7f) ? ' ' : ch;
+  }
+
+  return out;
+}
+
+/**
+ * 1. Récupère les contacts avec status "enriched" 
  */
 async function getEnrichedContacts() {
   const limitRaw = AGENT_CONFIG.CONTACTS_TO_COPYWRITE ?? 5;
@@ -43,16 +101,7 @@ async function getEnrichedContacts() {
 }
 
 /**
- * Récupère l'identité par ID (depuis active_identity_id du contact)
- */
-async function getIdentityById(identityId) {
-  if (!identityId) return null;
-  const rows = await supabaseSelect('identities', 'id', identityId, 1);
-  return rows?.[0] ?? null;
-}
-
-/**
- * Récupère la première identité active (fallback si le contact n'a pas active_identity_id)
+ * 2. Supabase: Récupère la première identité active
  */
 async function getFirstActiveIdentity() {
   const rows = await supabaseSelect('identities', 'active', true, 1, 'created_at', true);
@@ -60,7 +109,7 @@ async function getFirstActiveIdentity() {
 }
 
 /**
- * Vérifie si un email existe déjà pour ce contact
+ * 2.1 Supabase: Vérifie si un email existe déjà pour ce contact
  */
 async function hasExistingEmail(contactId) {
   const rows = await supabaseSelect('emails', 'contact_id', contactId, 1);
@@ -68,7 +117,7 @@ async function hasExistingEmail(contactId) {
 }
 
 /**
- * 2. Personnalise le template email via LLM à partir du persona et de l'identité
+ * 3. LLM: Personnalisation du template email 
  */
 async function personalizeEmail(contact, identity, template) {
   const persona = contact.persona || contact.additional_data?.persona || '(aucun persona)';
@@ -88,11 +137,17 @@ async function personalizeEmail(contact, identity, template) {
 
   const response = await localLlmRequest(systemPrompt, userPrompt, 0.5, 800);
 
-  // Parse JSON (retirer éventuels backticks markdown)
+  // 3.1 Parse JSON (retirer éventuels backticks markdown)
   let jsonStr = response.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '').trim();
-  // Caractères de contrôle (ex. retours à la ligne/tabs bruts) invalides dans une string JSON → espace
-  jsonStr = jsonStr.replace(/[\x00-\x1f\x7f]/g, ' ');
-  const parsed = JSON.parse(jsonStr);
+  
+  // 3.2 Parse direct puis fallback robuste pour JSON "presque valide"
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    jsonStr = repairJsonControlChars(jsonStr);
+    parsed = JSON.parse(jsonStr);
+  }
 
   return {
     object: parsed.object || template.object,
@@ -102,7 +157,7 @@ async function personalizeEmail(contact, identity, template) {
   };
 }
 
- // 3. Stocke l'email personnalisé dans la table emails
+ // 4. Supabase: Stocke l'email personnalisé dans la table emails
 async function storeEmail(contactId, personalized) {
   await supabaseInsert('emails', {
     contact_id: contactId,
@@ -114,9 +169,14 @@ async function storeEmail(contactId, personalized) {
   });
 }
 
-// 4. Passer le status du contact à "ready"
+// 5. Supabase: Passer le status du contact à "ready"
 async function setContactStatusReady(contactId) {
   await supabaseUpdate('contacts', 'id', contactId, { status: 'ready' });
+}
+
+// 5.1 Supabase: Associer l'identité utilisée au contact
+async function setContactIdentity(contactId, identityId) {
+  await supabaseUpdate('contacts', 'id', contactId, { identity_id: identityId });
 }
 
 // --- Exécution principale ---
@@ -130,34 +190,35 @@ async function setContactStatusReady(contactId) {
   let processed = 0;
   let skipped = 0;
   let errors = 0;
+  const total = contacts.length;
 
-  for (const contact of contacts) {
+  for (let i = 0; i < contacts.length; i++) {
+    const contact = contacts[i];
+    const progress = `[${i + 1}/${total}]`;
     try {
       const hasEmail = await hasExistingEmail(contact.id);
       if (hasEmail) {
-        console.log(`--- Contact ${contact.email}: email déjà existant, skip ---\n`);
+        console.log(`${progress} --- Contact ${contact.email}: email déjà existant, skip ---\n`);
         skipped++;
         continue;
       }
 
-      const identityId = contact.additional_data?.active_identity_id;
-      let identity = await getIdentityById(identityId);
+      const identity = await getFirstActiveIdentity();
       if (!identity) {
-        identity = await getFirstActiveIdentity();
-        if (!identity) {
-          console.warn(`--- Contact ${contact.email}: aucune identité active trouvée, email avec "(aucune identité)" ---`);
-        }
+        console.warn(`${progress} --- Contact ${contact.email}: aucune identité active trouvée, email avec "(aucune identité)" ---`);
+      } else {
+        await setContactIdentity(contact.id, identity.id);
       }
 
-      console.log(`--- Contact: ${contact.email} ---`);
+      console.log(`${progress} --- Contact: ${contact.email} ---`);
       const personalized = await personalizeEmail(contact, identity, template);
       await storeEmail(contact.id, personalized);
       await setContactStatusReady(contact.id);
       processed++;
-      console.log(`OK\n`);
+      console.log(`${progress} OK\n`);
     } catch (err) {
       errors++;
-      console.error(`Erreur: ${err.message}\n`);
+      console.error(`${progress} Erreur: ${err.message}\n`);
     }
   }
 

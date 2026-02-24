@@ -57,3 +57,35 @@ export async function sendEmail({
   }
 }
 
+/**
+ * Retourne la liste des domaines Resend vérifiés et autorisés pour l'envoi.
+ * @param {object} cfg
+ * @param {string} [cfg.apiKey] - Clé API Resend (default: process.env.RESEND_API_KEY)
+ * @returns {Promise<object[]>} Liste des domaines valides
+ */
+export async function getVerifiedSendingDomains({
+  apiKey = process.env.RESEND_API_KEY,
+} = {}) {
+  if (!apiKey) {
+    throw new Error('Clé API Resend manquante (RESEND_API_KEY)');
+  }
+
+  const resend = new Resend(apiKey);
+  const { data, error } = await resend.domains.list();
+
+  if (error) {
+    throw new Error(`Erreur Resend domains.list: ${JSON.stringify(error)}`);
+  }
+
+  const allDomains = data?.data ?? [];
+  const availableDomains = allDomains.filter(
+    (domain) => domain.status === 'verified' && domain.capabilities?.sending === 'enabled',
+  );
+
+  if (availableDomains.length === 0) {
+    throw new Error('Aucun domaine Resend vérifié/disponible pour l’envoi');
+  }
+
+  return availableDomains;
+}
+

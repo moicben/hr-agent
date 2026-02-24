@@ -3,26 +3,16 @@
  * 1. Sourcer les contacts status "verified" avec email
  * 2. Extraire le contenu de la page source (URL du contact)
  * 3. Générer un persona explicite via LLM
- * 4. Générer les motivations via LLM
- * 5. Définir la query Google pour afficher des interlocuteurs/clients idéaux
- * 6. Sélectionner parmi les résultats Google l'interlocuteur idéal
  */
 
 import 'dotenv/config';
 import { supabaseClient, supabaseUpdate } from '../utils/supabase.js';
 import { fetchPageText } from '../utils/fetch.js';
 import { localLlmRequest } from '../utils/llm.js';
-import { searchSerper } from '../utils/serper.js';
-import {
-  AGENT_CONFIG,
-  PERSONA_PROMPT,
-  MOTIVATION_PROMPT,
-  INTERLOCUTOR_SEARCH_QUERY_PROMPT,
-  INTERLOCUTOR_SELECTION_PROMPT
-} from '../config.js';
+import { AGENT_CONFIG, PERSONA_PROMPT } from '../config.js';
 
 /**
- * 1. Récupère les contacts avec status "verified" (limité par CONTACTS_TO_ENRICH, "*" = sans limite)
+ * 1. Récupère les contacts avec status "verified" 
  */
 async function getVerifiedContacts() {
   const limitRaw = AGENT_CONFIG.CONTACTS_TO_ENRICH ?? 100;
@@ -50,8 +40,7 @@ async function getVerifiedContacts() {
 }
 
 /**
- * 2. Extrait les N premiers caractères de la page à l'URL du contact (additional_data.url ou .web).
- * Skip si réseau social (géré par fetchPageText).
+ * 2. Extraction du contenu de la page source du contact (sauf si réseau social)
  */
 async function fetchWebTextForContact(contact) {
   const add = contact.additional_data || {};
@@ -61,7 +50,7 @@ async function fetchWebTextForContact(contact) {
 }
 
 /**
- * 3. Génère le persona descriptif du contact via LLM (contact + web content)
+ * 3.1 LLM : Fonction de génération du persona
  */
 async function generatePersona(contact, webText) {
   const add = contact.additional_data || {};
@@ -84,69 +73,7 @@ async function generatePersona(contact, webText) {
 }
 
 /**
- * 4. Défini via LLM les motivations du contact (contact data + persona)
- */
-async function generateMotivations(contact, persona) {
-  const add = contact.additional_data || {};
-  const contactInformations = JSON.stringify({
-    email: contact.email,
-    source_query: contact.source_query,
-    title: add.title,
-    description: add.description,
-    url: add.web || add.url
-  }, null, 2);
-
-  const systemPrompt = MOTIVATION_PROMPT[0].system.trim();
-  const userPrompt = MOTIVATION_PROMPT[0].user
-    .replace(/\{\{contact_informations\}\}/g, contactInformations)
-    .replace(/\{\{persona\}\}/g, persona)
-    .trim();
-
-  return localLlmRequest(systemPrompt, userPrompt, 0.5, 200);
-}
-
-/**
- * 5. Choisir via LLM la query Google adapté à trouver le client idéal pour le prestataire
- */
-async function generateInterlocutorQuery(persona, motivations) {
-  const systemPrompt = INTERLOCUTOR_SEARCH_QUERY_PROMPT[0].system.trim();
-  const userPrompt = INTERLOCUTOR_SEARCH_QUERY_PROMPT[0].user
-    .replace(/\{\{persona\}\}/g, persona)
-    .replace(/\{\{motivations\}\}/g, motivations)
-    .trim();
-
-  return localLlmRequest(systemPrompt, userPrompt, 0.5, 80);
-}
-
-/**
- * 6. Recherche Serper puis sélectionne l'interlocuteur idéal parmi les résultats via LLM
- */
-async function selectInterlocutor(persona, motivations, searchQuery) {
-  const { organic = [] } = await searchSerper({
-    query: searchQuery,
-    gl: 'fr',
-    hl: 'fr',
-    num: 10
-  });
-
-  const searchResults = organic.length > 0
-    ? organic.map((r, i) => `${i + 1}. ${r.title || ''} | ${r.link || ''} | ${r.snippet || ''}`).join('\n')
-    : '(aucun résultat)';
-
-  const systemPrompt = INTERLOCUTOR_SELECTION_PROMPT[0].system.trim();
-  const userPrompt = INTERLOCUTOR_SELECTION_PROMPT[0].user
-    .replace(/\{\{persona\}\}/g, persona)
-    .replace(/\{\{motivations\}\}/g, motivations)
-    .replace(/\{\{search_results\}\}/g, searchResults)
-    .trim();
-
-  const raw = await localLlmRequest(systemPrompt, userPrompt, 0.3, 300);
-  const trimmed = raw.trim().replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
-  return JSON.parse(trimmed);
-}
-
-/**
- * Enrichit un contact : extraction web, persona, motivations, query interlocuteur, sélection interlocuteur
+ * 3.2 Supabase / LLM : Enrichissement du persona + stockage
  */
 async function enrichContact(contact, logPrefix = '') {
   const id = contact.id;
@@ -154,34 +81,13 @@ async function enrichContact(contact, logPrefix = '') {
   console.log(`${logPrefix}  → extraction page source...`);
   const webText = await fetchWebTextForContact(contact);
   if (!webText || !webText.trim()) {
-    const url = contact.additional_data?.web || contact.additional_data?.url || '(aucune)';
-    console.log(`${logPrefix}  ⚠ contenu vide (URL: ${url}) — fallback sur données contact uniquement`);
+    console.log(`${logPrefix}  ⚠ contenu vide — fallback données contact`);
   }
   console.log(`${logPrefix}  → création persona (LLM)...`);
   const persona = await generatePersona(contact, webText);
 
-  console.log(`${logPrefix}  → génération motivations (LLM)...`);
-  const motivations = await generateMotivations(contact, persona);
-
-  console.log(`${logPrefix}  → génération query interlocuteur (LLM)...`);
-  const interlocutorQuery = await generateInterlocutorQuery(persona, motivations);
-
-  console.log(`${logPrefix}  → recherche Serper + sélection interlocuteur (LLM)...`);
-  let interlocutorData = { interlocutor: null, company: null, source_url: null, localisation: null };
-  try {
-    interlocutorData = await selectInterlocutor(persona, motivations, interlocutorQuery.trim());
-  } catch (err) {
-    console.warn(`${logPrefix}  ⚠ sélection interlocuteur échouée: ${err.message}`);
-  }
-
   const updatedAdditionalData = {
     ...(contact.additional_data || {}),
-    motivations: motivations.trim(),
-    interlocutor_search_query: interlocutorQuery.trim(),
-    ...(interlocutorData.interlocutor && { interlocutor: interlocutorData.interlocutor }),
-    ...(interlocutorData.company && { company: interlocutorData.company }),
-    ...(interlocutorData.source_url && { source_url: interlocutorData.source_url }),
-    ...(interlocutorData.localisation && { localisation: interlocutorData.localisation }),
     ...(webText?.trim() && { web_content: webText.trim() })
   };
 
@@ -191,6 +97,9 @@ async function enrichContact(contact, logPrefix = '') {
     status: 'enriched'
   });
 }
+
+
+
 
 // --- Exécution principale ---
 

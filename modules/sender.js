@@ -7,11 +7,11 @@
 
 import 'dotenv/config';
 import { supabaseClient, supabaseSelect, supabaseSelectWithFilters, supabaseUpdate } from '../utils/supabase.js';
-import { sendEmail } from '../utils/resend.js';
+import { sendEmail, getVerifiedSendingDomains } from '../utils/resend.js';
 import { AGENT_CONFIG } from '../config.js';
 
 /**
- * 1. Récupère les contacts avec status "ready" (limité par CONTACTS_TO_SEND, "*" = sans limite)
+ * 1. Supabase : Sourcer les contacts avec status "ready"
  */
 async function getReadyContacts() {
   const limitRaw = AGENT_CONFIG.CONTACTS_TO_SEND ?? 1;
@@ -40,16 +40,7 @@ async function getReadyContacts() {
 }
 
 /**
- * Récupère l'identité par ID
- */
-async function getIdentityById(identityId) {
-  if (!identityId) return null;
-  const rows = await supabaseSelect('identities', 'id', identityId, 1);
-  return rows?.[0] ?? null;
-}
-
-/**
- * Récupère la première identité active (fallback)
+ * 1 Supabase : Sélectionner la première identité active
  */
 async function getFirstActiveIdentity() {
   const rows = await supabaseSelect('identities', 'active', true, 1, 'created_at', true);
@@ -57,7 +48,7 @@ async function getFirstActiveIdentity() {
 }
 
 /**
- * Récupère l'email draft pour un contact
+ * 2 Supabase : Sélectionner l'email "draft" à envoyer au contact
  */
 async function getDraftEmail(contactId) {
   const rows = await supabaseSelectWithFilters(
@@ -71,51 +62,80 @@ async function getDraftEmail(contactId) {
 }
 
 /**
- * Construit l'adresse expéditrice au format Resend "Nom <email@domain.com>"
+ * 3. Supabase : Construire l'adresse expéditrice 
  */
-function buildFromAddress(identity) {
-  if (!identity || !identity.email) return null;
-  const name = identity.fullname || identity.full_name || identity.name || 'Expéditeur';
-  return `${name} <${identity.email}>`;
+function buildFromAddress(identity, domainName) {
+  if (!identity || !identity.fullname || !identity.company) return null;
+  const company = identity.company.toLowerCase().replace(/\s+/g, '.');
+  return `${identity.fullname} <${company}@${domainName}>`;
 }
 
 /**
- * Assemble le corps de l'email (content + cta + footer) en texte brut
+ * Normalise le contenu email en versions texte + HTML.
+ * - Garde des doubles sauts entre les sections
+ * - Supporte les <br> déjà présents
  */
-function buildEmailBody(emailRecord) {
-  const parts = [emailRecord.content, emailRecord.cta, emailRecord.footer].filter(Boolean);
-  return parts.join('\n\n').trim();
+function buildEmailBodies(emailRecord) {
+  const sections = [emailRecord.content, emailRecord.cta, emailRecord.footer]
+    .map((part) => (part || '').trim())
+    .filter(Boolean);
+
+  const raw = sections.join('\n\n');
+
+  const text = raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  const html = text
+    .split('\n\n')
+    .map((paragraph) => `<p>${paragraph.replace(/\n/g, '<br />')}</p>`)
+    .join('\n');
+
+  return { text, html };
 }
 
+
 /**
- * 2. Envoie l'email au contact via Resend et met à jour les statuts
+ * 4. Resend : Envoyer l'email au contact via l'adresse construite
  */
-async function sendEmailToContact(contact, emailRecord, identity, logPrefix = '') {
-  const from = buildFromAddress(identity);
+async function sendEmailToContact(contact, emailRecord, identity, domainName, logPrefix = '') {
+  const from = buildFromAddress(identity, domainName);
   if (!from) {
     throw new Error('Identité expéditeur manquante (email requis)');
   }
 
-  const body = buildEmailBody(emailRecord);
+  const { text, html } = buildEmailBodies(emailRecord);
 
   await sendEmail({
     from,
     to: contact.email,
     subject: emailRecord.object,
-    text: body
+    text,
+    html
   });
 
   await supabaseUpdate('contacts', 'id', contact.id, { status: 'processed' });
-  await supabaseUpdate('emails', 'id', emailRecord.id, { status: 'sent' });
-  console.log(`${logPrefix} ✓ Email envoyé à ${contact.email}`);
+  await supabaseUpdate('emails', 'id', emailRecord.id, {
+    status: 'sent',
+    sent_at: new Date().toISOString(),
+    used_domain: domainName,
+    error: null
+  });
+  console.log(`${logPrefix} ✓ Email envoyé à ${contact.email} via ${domainName}`);
 }
 
 // --- Exécution principale ---
 
 (async function main() {
   const contacts = await getReadyContacts();
+  const sendingDomains = await getVerifiedSendingDomains();
+  let domainIndex = 0;
+
   console.log('\n--- Sender ---\n');
   console.log(`Contacts prêts à envoyer: ${contacts.length} (limite: ${AGENT_CONFIG.CONTACTS_TO_SEND === '*' ? 'aucune' : AGENT_CONFIG.CONTACTS_TO_SEND})`);
+  console.log(`Domaines disponibles pour envoi: ${sendingDomains.length}`);
 
   let sent = 0;
   let errors = 0;
@@ -128,15 +148,12 @@ async function sendEmailToContact(contact, emailRecord, identity, logPrefix = ''
     try {
       const emailRecord = await getDraftEmail(contact.id);
       if (!emailRecord) {
+        await supabaseUpdate('contacts', 'id', contact.id, { status: 'enriched' });
         console.warn(`${progress} Contact ${contact.email}: aucun email draft trouvé, skip\n`);
         continue;
       }
 
-      const identityId = contact.additional_data?.active_identity_id;
-      let identity = await getIdentityById(identityId);
-      if (!identity) {
-        identity = await getFirstActiveIdentity();
-      }
+      const identity = await getFirstActiveIdentity();
       if (!identity) {
         throw new Error('Aucune identité active trouvée pour l\'expéditeur');
       }
@@ -144,7 +161,10 @@ async function sendEmailToContact(contact, emailRecord, identity, logPrefix = ''
       console.log(`${progress} --- Contact: ${contact.email} ---`);
       await supabaseUpdate('contacts', 'id', contact.id, { status: 'processing' });
 
-      await sendEmailToContact(contact, emailRecord, identity, progress);
+      const selectedDomain = sendingDomains[domainIndex % sendingDomains.length];
+      domainIndex += 1;
+
+      await sendEmailToContact(contact, emailRecord, identity, selectedDomain.name, progress);
       sent++;
       console.log(`${progress} OK\n`);
     } catch (err) {
@@ -155,7 +175,10 @@ async function sendEmailToContact(contact, emailRecord, identity, logPrefix = ''
         await supabaseUpdate('contacts', 'id', contact.id, { status: 'error' });
         const emailRecord = await getDraftEmail(contact.id);
         if (emailRecord) {
-          await supabaseUpdate('emails', 'id', emailRecord.id, { status: 'error' });
+          await supabaseUpdate('emails', 'id', emailRecord.id, {
+            status: 'error',
+            error: err?.message || 'Erreur inconnue'
+          });
         }
       } catch (updateErr) {
         console.error(`${progress} Échec mise à jour statuts: ${updateErr.message}`);

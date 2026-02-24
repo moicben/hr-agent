@@ -1,6 +1,6 @@
 /**
  * Module 1 - Scraping
- * Extrait des emails depuis Google (Serper) pour chaque query × domaine,
+ * Extrait des emails via SearXNG pour chaque query × domaine,
  * puis les stocke dans Supabase.
  */
 
@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import dotenv from 'dotenv';
 import { supabaseInsert, supabaseSelect } from '../utils/supabase.js';
+import { searchSearxng } from '../utils/searxng.js';
 import { EMAIL_DOMAINS, AGENT_CONFIG } from '../config.js';
 
 // Filtrage des faux emails (noms de fichiers média)
@@ -18,17 +19,16 @@ dotenv.config();
 
 // --- Constantes ---
 
-const SERPER_API_KEY = process.env.SERPER_API_KEY;
-const SERPER_API_URL = 'https://google.serper.dev/search';
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const INPUT_FILE = path.resolve(process.cwd(), 'input.txt');
+const HISTORIC_FILE = path.resolve(process.cwd(), 'input_historic.txt');
 
 // --- Étape 1 : Extraction des queries ---
 
 /**
  * Lit input.txt et retourne la liste des queries (1 par ligne, lignes vides ignorées).
  */
-async function extractQueries(filePath) {
+export async function extractQueries(filePath) {
   const content = await fs.readFile(filePath, 'utf8');
 
   return content
@@ -37,42 +37,73 @@ async function extractQueries(filePath) {
     .filter(line => line.length > 0);
 }
 
-// --- Étape 2 : Recherche Serper et extraction des emails ---
+/**
+ * Déplace une query traitée de input.txt vers le haut de input_historic.txt.
+ */
+export async function moveQueryToHistoric(query) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return;
+
+  const inputContent = await fs.readFile(INPUT_FILE, 'utf8');
+  const inputLines = inputContent.split('\n');
+  const queryIndex = inputLines.findIndex(line => line.trim() === normalizedQuery);
+
+  if (queryIndex !== -1) {
+    inputLines.splice(queryIndex, 1);
+    await fs.writeFile(INPUT_FILE, inputLines.join('\n').replace(/\n+$/, '\n'), 'utf8');
+  }
+
+  let historicContent = '';
+  try {
+    historicContent = await fs.readFile(HISTORIC_FILE, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  const historicLines = historicContent
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && line !== normalizedQuery);
+
+  const newHistoricContent = [normalizedQuery, ...historicLines].join('\n');
+  await fs.writeFile(HISTORIC_FILE, `${newHistoricContent}\n`, 'utf8');
+}
+
+
+export async function waitRandomRequestDelay() {
+  const minDelay = AGENT_CONFIG.REQUEST_DELAY_MIN_MS ?? 1000;
+  const maxDelay = AGENT_CONFIG.REQUEST_DELAY_MAX_MS ?? 5000;
+  const delayMs = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+  await new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+// --- Étape 2 : Recherche SearXNG et extraction des emails ---
 
 /**
- * Pour une query × domaine, interroge Serper (Google) avec pagination
+ * Pour une query × domaine, interroge SearXNG avec pagination
  * et extrait les emails trouvés dans les résultats.
  * Déduplication par email (insensible à la casse).
  */
-async function extractSerpResultsEmails(searchStr, query, domain) {
-  let start = 0;
+export async function extractSerpResultsEmails(searchStr, query, domain) {
   let pageNum = 1;
   const seenEmails = new Set();
   const contactsList = [];
 
   while (pageNum <= AGENT_CONFIG.PAGES_COUNT) {
-    const response = await fetch(SERPER_API_URL, {
-      method: 'POST',
-      headers: {
-        'X-API-KEY': SERPER_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        q: searchStr,
-        gl: 'fr',
-        hl: 'fr',
-        tbs: 'qdr:m',
-        start
-      })
-    });
-
-    if (!response.ok) {
-      console.warn(`Erreur Serper (query: "${query}", start: ${start}): ${await response.text()}`);
-      break;
+    let organic = [];
+    try {
+      organic = await searchSearxng({
+        query: searchStr,
+        page: pageNum,
+        language: 'fr-FR'
+      });
+    } catch (error) {
+      console.error(`[SearXNG] Indisponible (query: "${query}", page: ${pageNum}): ${error?.message || error}`);
+      throw error;
     }
 
-    const data = await response.json();
-    const { organic = [] } = data;
+    await waitRandomRequestDelay();
+
     let newEmailsCount = 0;
 
     for (const result of organic) {
@@ -100,10 +131,9 @@ async function extractSerpResultsEmails(searchStr, query, domain) {
 
     console.log(`Extraits: ${newEmailsCount} | page: ${pageNum} | domain: ${domain}`);
 
-    // Arrêt si plus de résultats ou aucun nouvel email sur cette page
-    if (organic.length === 0 || newEmailsCount === 0) break;
+    // Arrêt si 0 ou 1 résultat, ou aucun nouvel email sur cette page
+    if (organic.length <= 1 || newEmailsCount === 0) break;
 
-    start += 10;
     pageNum++;
   }
 
@@ -112,7 +142,6 @@ async function extractSerpResultsEmails(searchStr, query, domain) {
 
 
 // --- Étape 3 : Stockage Supabase ---
-// Le filtre français (3.1) et MillionVerifier (3.2) sont dans le module verifier.js (contacts status "new").
 
 /**
  * Insère les contacts dans Supabase (table "contacts"), status "new".
@@ -120,24 +149,29 @@ async function extractSerpResultsEmails(searchStr, query, domain) {
  * additional_data : title, description, url.
  * @returns Nombre d'emails effectivement insérés
  */
-async function storeContacts(contacts, source_query) {
+export async function storeContacts(contacts, source_query) {
   let inserted = 0;
 
   for (const contact of contacts) {
     const exist = await supabaseSelect('contacts', 'email', contact.email, 1);
 
     if (!exist || exist.length === 0) {
-      await supabaseInsert('contacts', {
-        email: contact.email,
-        source_query,
-        additional_data: {
-          title: contact.title,
-          description: contact.description,
-          url: contact.url
-        },
-        status: 'new'
-      });
-      inserted++;
+      try {
+        await supabaseInsert('contacts', {
+          email: contact.email,
+          source_query,
+          additional_data: {
+            title: contact.title,
+            description: contact.description,
+            url: contact.url
+          },
+          status: 'new'
+        });
+        inserted++;
+      } catch (err) {
+        // Doublon ou autre erreur : on ignore et continue
+        if (err?.code !== '23505') console.error('[storeContacts]', err?.message || err);
+      }
     }
   }
 
@@ -156,7 +190,7 @@ async function storeContacts(contacts, source_query) {
 
     const resultsArrays = [];
     for (const domain of EMAIL_DOMAINS) {
-      const searchStr = `"${query}" "${domain}"`;
+      const searchStr = `"${query}" ("${domain}")`;
       const contacts = await extractSerpResultsEmails(searchStr, query, domain);
       resultsArrays.push(contacts);
     }
@@ -176,11 +210,16 @@ async function storeContacts(contacts, source_query) {
       totalInserted += inserted;
       console.log(`Extraits: ${contacts.length} | Insérés: ${inserted}`);
     }
+
+    await moveQueryToHistoric(query);
   }
 
   console.log('\n--- Récap final ---');
   console.log(`Queries traitées: ${queries.length}`);
   console.log(`Emails extraits (total): ${totalExtracted}`);
   console.log(`Emails insérés (total): ${totalInserted}`);
-  console.log('Scraping terminé. Lancer verifier.js pour 3.1 + 3.2 puis enricher.js.');
-})();
+  console.log('Scraping terminé.');
+})().catch(err => {
+  console.error('Erreur fatale:', err?.message || err);
+  process.exit(1);
+});

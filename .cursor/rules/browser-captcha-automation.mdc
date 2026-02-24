@@ -9,7 +9,7 @@ alwaysApply: true
 
 **Utiliser Playwright (user-playwright MCP)** pour toute tâche impliquant un CAPTCHA ou reCAPTCHA. Le navigateur intégré Cursor (cursor-ide-browser) **ne peut pas interagir avec le contenu des iframes** — le reCAPTCHA échoue systématiquement.
 
-## Workflow pour résoudre un CAPTCHA image (grille 3x3 ou 4x4)
+## Workflow pour résoudre un CAPTCHA image (grille toujours 4x4)
 
 1. **Remplir le formulaire** et cliquer sur le bouton de soumission
 2. **Capturer une screenshot** du dialogue CAPTCHA via `browser_run_code` :
@@ -22,11 +22,11 @@ alwaysApply: true
 5. **Gérer les défis successifs** : reCAPTCHA peut afficher "Please also check the new images" — refaire screenshot + analyse + clics
 6. **Cliquer sur Verify** une fois les bonnes images sélectionnées
 
-## Coordonnées de la grille 3x3
+## Coordonnées de la grille 4x4
 
 Pour un dialogue ~400×580 px, la grille commence après l'en-tête (~80px). Chaque cellule ~133×133 px. Centres approximatifs (depuis le coin du dialogue) :
-- Ligne 1 : y ~200 ; Ligne 2 : y ~333 ; Ligne 3 : y ~467
-- Colonne 1 : x ~67 ; Colonne 2 : x ~200 ; Colonne 3 : x ~333
+- Ligne 1 : y ~200 ; Ligne 2 : y ~333 ; Ligne 3 : y ~467 ; Ligne 4 ~600
+- Colonne 1 : x ~67 ; Colonne 2 : x ~200 ; Colonne 3 : x ~333 ; Colonne 4 ~466
 
 ## Cas spécifique : inscription Serper (serper.dev/signup)
 

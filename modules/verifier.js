@@ -2,7 +2,7 @@
  * Module Verifier
  * Pour chaque contact avec status "new", lance :
  * - Étape 1 : filtre français (isFrenchText sur titre + description)
- * - Étape 2 : MillionVerifier (ok, catch_all, unknown)
+ * - Étape 2 : MillionVerifier (ok, catch_all)
  * - Étape 3 : vérification d'intérêt LLM (indépendant ouvert à une potentielle mission ?)
  * Les contacts qui passent les 3 étapes → status "verified", les autres → status "rejected".
  */
@@ -14,37 +14,51 @@ import { isFrenchText } from '../utils/french.js';
 import { localLlmRequest } from '../utils/llm.js';
 import { AGENT_CONFIG, VERIFIER_PROMPT } from '../config.js';
 
+/** Taille des pages pour contourner la limite Supabase/PostgREST (défaut 1000 lignes). */
+const FETCH_PAGE_SIZE = 1000;
+
 /**
  * Récupère les contacts avec status "new" et email non null (limité par CONTACTS_TO_VERIFY, "*" = sans limite).
+ * Pagine automatiquement pour récupérer au-delà de la limite 1000 de Supabase.
  */
 async function getNewContacts() {
   const limitRaw = AGENT_CONFIG.CONTACTS_TO_VERIFY ?? 100;
   const hasLimit = limitRaw !== '*';
+  const maxTotal = hasLimit ? Math.min(Number(limitRaw), 1e6) : 1e6;
+  const all = [];
 
-  let query = supabaseClient
-    .from('contacts')
-    .select('*')
-    .eq('status', 'new')
-    .not('email', 'is', null)
-    .order('created_at', { ascending: true });
+  let offset = 0;
+  let hasMore = true;
 
-  if (hasLimit) {
-    query = query.limit(limitRaw);
-  } else {
-    query = query.limit(10000); // pratique "sans limite"
+  while (hasMore && all.length < maxTotal) {
+    const pageSize = Math.min(FETCH_PAGE_SIZE, maxTotal - all.length);
+    const from = offset;
+    const to = offset + pageSize - 1;
+
+    const { data, error } = await supabaseClient
+      .from('contacts')
+      .select('*')
+      .eq('status', 'new')
+      .not('email', 'is', null)
+      .order('created_at', { ascending: true })
+      .range(from, to);
+
+    if (error) {
+      console.error('[verifier] Erreur Supabase:', error.message);
+      throw error;
+    }
+
+    const page = data || [];
+    all.push(...page);
+    offset += page.length;
+    hasMore = page.length === FETCH_PAGE_SIZE;
   }
 
-  const { data, error } = await query;
-
-  if (error) {
-    console.error('[verifier] Erreur Supabase:', error.message);
-    throw error;
-  }
-  return data || [];
+  return all;
 }
 
 /**
- * 1. Vérification : Titre et description sont en français ? (isFrenchText).
+ * 1. Titre et description sont en français ? (isFrenchText).
  */
 function filterFrenchContacts(contacts) {
   return contacts.filter(c => {
@@ -55,7 +69,7 @@ function filterFrenchContacts(contacts) {
 }
 
 /**
- * 2. Vérification : Les emails sont valides ? (ok, catch_all, unknown).
+ * 2. MillionVerifier : Les emails sont valides ? (ok, catch_all).
  */
 async function verifyContacts(contacts) {
   if (contacts.length === 0) return [];
@@ -63,7 +77,7 @@ async function verifyContacts(contacts) {
 }
 
 /**
- * 3. Vérification d'intérêt : ce contact est-il un indépendant en potentiel recherche de missions ?
+ * 3. Intérêt LLM : ce contact est-il un indépendant en potentiel recherche de missions ?
  * Retourne { hasInterest: boolean, explanation?: string }. Parse "true" ou "false: explication".
  */
 async function verifyContactInterest(contact) {
@@ -83,7 +97,7 @@ async function verifyContactInterest(contact) {
 }
 
 /**
- * Met à jour le status et la note du contact en base.
+ * 4. Met à jour le status et la note du contact en base.
  * @param {string} note - Raison et explication (pour rejet). Null si verified.
  */
 async function setContactStatus(contactId, status, note = null) {
@@ -104,61 +118,65 @@ async function setContactStatus(contactId, status, note = null) {
     return;
   }
 
-  const frenchContacts = filterFrenchContacts(contacts);
-  const rejectedFrench = contacts.length - frenchContacts.length;
-  console.log(`Après filtre français (1): ${frenchContacts.length}`);
-
-  const verifiedContacts = await verifyContacts(frenchContacts);
-  const rejectedMv = frenchContacts.length - verifiedContacts.length;
-  console.log(`Après MillionVerifier (2): ${verifiedContacts.length}`);
-
-  const interestResults = new Map();
-  for (const c of verifiedContacts) {
-    const { hasInterest, explanation } = await verifyContactInterest(c);
-    interestResults.set(c.email.toLowerCase(), { hasInterest, explanation });
-  }
-  const verifiedEmails = new Set([...interestResults.entries()].filter(([, v]) => v.hasInterest).map(([k]) => k));
-  const rejectedInterest = verifiedContacts.length - verifiedEmails.size;
-  console.log(`Après vérification d'intérêt (3): ${verifiedEmails.size}`);
-
-  const frenchEmails = new Set(frenchContacts.map(c => c.email.toLowerCase()));
-  const mvEmails = new Set(verifiedContacts.map(c => c.email.toLowerCase()));
-
   let verified = 0;
   let rejected = 0;
   let failed = 0;
+  let rejectedFrench = 0;
+  let rejectedMv = 0;
+  let rejectedInterest = 0;
+  const total = contacts.length;
 
-  for (const contact of contacts) {
-    const email = (contact.email || '').toLowerCase();
-    const isVerified = verifiedEmails.has(email);
-    const status = isVerified ? 'verified' : 'rejected';
-
-    let note = null;
-    if (!isVerified) {
-      if (!frenchEmails.has(email)) {
-        note = 'Rejeté: Titre et description non français.';
-      } else if (!mvEmails.has(email)) {
-        note = 'Rejeté: Email invalide ou non vérifié (MillionVerifier).';
-      } else {
-        const { explanation } = interestResults.get(email) || {};
-        note = explanation
-          ? `Rejeté: Pas d'intérêt pour missions. ${explanation}`
-          : 'Rejeté: Pas d\'intérêt pour missions (vérification LLM).';
-      }
-    }
-
+  for (let i = 0; i < contacts.length; i++) {
+    const contact = contacts[i];
+    const progress = `[${i + 1}/${total}]`;
     try {
-      await setContactStatus(contact.id, status, note);
-      if (status === 'verified') verified++;
-      else rejected++;
+      console.log(`${progress} --- Contact: ${contact.email} ---`);
+
+      // Étape 1: filtre français
+      const isFrench = filterFrenchContacts([contact]).length > 0;
+      if (!isFrench) {
+        rejectedFrench++;
+        await setContactStatus(contact.id, 'rejected', 'Rejeté: Titre et description non français.');
+        rejected++;
+        console.log(`${progress} Rejeté (étape 1: français)\n`);
+        continue;
+      }
+
+      // Étape 2: validation MillionVerifier
+      const mvValidated = (await verifyContacts([contact])).length > 0;
+      if (!mvValidated) {
+        rejectedMv++;
+        await setContactStatus(contact.id, 'rejected', 'Rejeté: Email invalide ou non vérifié (MillionVerifier).');
+        rejected++;
+        console.log(`${progress} Rejeté (étape 2: MillionVerifier)\n`);
+        continue;
+      }
+
+      // Étape 3: intérêt LLM (désactivé temporairement)
+      // const { hasInterest, explanation } = await verifyContactInterest(contact);
+      // if (!hasInterest) {
+      //   rejectedInterest++;
+      //   const note = explanation
+      //     ? `Rejeté: Pas d'intérêt pour missions. ${explanation}`
+      //     : 'Rejeté: Pas d\'intérêt pour missions (vérification LLM).';
+      //   await setContactStatus(contact.id, 'rejected', note);
+      //   rejected++;
+      //   console.log(`${progress} Rejeté (étape 3: intérêt)\n`);
+      //   continue;
+      // }
+
+      await setContactStatus(contact.id, 'verified');
+      verified++;
+      console.log(`${progress} OK (verified)\n`);
     } catch (err) {
       failed++;
+      console.error(`${progress} Erreur: ${err.message}\n`);
       console.error(`[verifier] Échec mise à jour ${contact.email}: ${err.message}`);
     }
   }
 
   console.log('\n--- Récap ---');
-  console.log(`Traités: ${contacts.length} | Verified: ${verified} | Rejected: ${rejected}${failed > 0 ? ` | Échecs Supabase: ${failed}` : ''}`);
+  console.log(`Traités: ${contacts.length} | Verified: ${verified} | Rejected: ${rejected}${failed > 0 ? ` | Échecs: ${failed}` : ''}`);
   console.log(`  → Rejetés (français): ${rejectedFrench} | Rejetés (MillionVerifier): ${rejectedMv} | Rejetés (intérêt): ${rejectedInterest}`);
   console.log('Vérification terminée.');
 })();

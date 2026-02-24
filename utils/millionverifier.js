@@ -2,16 +2,15 @@
  * MillionVerifier - Vérification d'emails
  * @see https://developer.millionverifier.com/
  *
- * Utilise la Single API (GET) avec requêtes parallèles par chunks.
- * Plus rapide et pratique que la Bulk API (pas de fichier, pas de polling).
+ * Utilise la Single API (GET), vérification email par email.
+ * Plus pratique que la Bulk API (pas de fichier, pas de polling).
  */
 
 import 'dotenv/config';
 
 const API_KEY = process.env.MILLIONVERIFIER_API_KEY;
 const SINGLE_API_URL = 'https://api.millionverifier.com/api/v3/';
-const CONCURRENCY = 5;
-const VALID_RESULTS = ['ok', 'catch_all', 'unknown']; // ok = valide, catch_all = domaine accepte tout, unknown = indéterminé
+const VALID_RESULTS = ['ok', 'catch_all']; // ok = valide, catch_all = domaine accepte tout
 
 /**
  * Vérifie un seul email via la Single API.
@@ -50,7 +49,7 @@ export async function verifyEmail(email) {
 }
 
 /**
- * Vérifie une liste d'emails en parallèle (par chunks).
+ * Vérifie une liste d'emails un par un.
  * @param {string[]} emails - Liste d'emails à vérifier
  * @returns {Promise<{valid: string[], invalid: string[], results: Array}>}
  */
@@ -60,13 +59,9 @@ export async function verifyEmails(emails) {
   }
 
   const results = [];
-
-  for (let i = 0; i < emails.length; i += CONCURRENCY) {
-    const chunk = emails.slice(i, i + CONCURRENCY);
-    const chunkResults = await Promise.all(
-      chunk.map(email => verifyEmail(email).catch(err => ({ email, result: 'error', valid: false, error: err.message })))
-    );
-    results.push(...chunkResults);
+  for (const email of emails) {
+    const r = await verifyEmail(email).catch(err => ({ email, result: 'error', valid: false, error: err.message }));
+    results.push(r);
   }
 
   const valid = results.filter(r => r.valid).map(r => r.email);
@@ -79,7 +74,7 @@ export async function verifyEmails(emails) {
  * Filtre une liste de contacts pour ne garder que les emails vérifiés valides.
  * Si MILLIONVERIFIER_API_KEY est absent, retourne tous les contacts (pas de vérification).
  * @param {Array<{email: string, title?: string, description?: string, url?: string}>} contacts
- * @returns {Promise<Array>} Contacts dont l'email est ok, catch_all ou unknown
+ * @returns {Promise<Array>} Contacts dont l'email est ok ou catch_all
  */
 export async function filterValidContacts(contacts) {
   if (!API_KEY) {
