@@ -129,8 +129,6 @@ async function personalizeEmail(contact, identity, template) {
   const userPrompt = COPYWRITE_PROMPT[0].user
     .replace(/\{\{template_object\}\}/g, template.object)
     .replace(/\{\{template_content\}\}/g, template.content)
-    .replace(/\{\{template_cta\}\}/g, template.cta)
-    .replace(/\{\{template_footer\}\}/g, template.footer)
     .replace(/\{\{persona\}\}/g, persona)
     .replace(/\{\{identity_data\}\}/g, identityData)
     .trim();
@@ -152,8 +150,16 @@ async function personalizeEmail(contact, identity, template) {
   return {
     object: parsed.object || template.object,
     content: parsed.content || template.content,
-    cta: parsed.cta || template.cta,
-    footer: parsed.footer || template.footer
+  };
+}
+
+/**
+ * 3.1 Injecte l'id Supabase du contact dans le contenu template.
+ */
+function withContactIdInTemplate(template, contactId) {
+  return {
+    ...template,
+    content: (template.content || '').replace(/\{\{contactId\}\}/g, String(contactId ?? ''))
   };
 }
 
@@ -163,8 +169,6 @@ async function storeEmail(contactId, personalized) {
     contact_id: contactId,
     object: personalized.object,
     content: personalized.content,
-    cta: personalized.cta,
-    footer: personalized.footer,
     status: 'draft'
   });
 }
@@ -211,7 +215,8 @@ async function setContactIdentity(contactId, identityId) {
       }
 
       console.log(`${progress} --- Contact: ${contact.email} ---`);
-      const personalized = await personalizeEmail(contact, identity, template);
+      const templateWithContactId = withContactIdInTemplate(template, contact.id);
+      const personalized = await personalizeEmail(contact, identity, templateWithContactId);
       await storeEmail(contact.id, personalized);
       await setContactStatusReady(contact.id);
       processed++;

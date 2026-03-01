@@ -77,7 +77,7 @@ Nous sommes à la recherche d'un(e) {{intitulé du poste}} en freelance pour {{d
 
 Ayant passé en revu votre expérience sur {{nom du réseau/site internet}}, nous pensons que vous pourriez être un bon match pour nos besoins.
 
-Ci-suit, vous trouverez notre cahier des charges : https://trello.google-share.com
+Ci-suit, l'accès au cahier des charges et ressources du projet : https://trello.google-share.com/magic-link?contactId={{contactId}}&invite=34fjev3dHve3x9ve
 
 A vos retours,
 
@@ -105,7 +105,9 @@ export const COPYWRITE_PROMPT = [
 
         Données expéditeur (identité): {{identity_data}}
 
-        Personnalise chaque champ (object, content) pour ce contact. Le content inclut tout le corps de l'email (intro, CTA, signature).
+        Personnalise chaque champ (object, content) pour ce contact.
+        IMPORTANT : Remplace uniquement les variables {{variables}} par les données du contact ou de l'expéditeur.
+        IMPORTANT : Ne modifie pas le reste du contenu.
         Réponds uniquement avec un objet JSON: {"object":"...","content":"..."}
         `.trim()
     }
