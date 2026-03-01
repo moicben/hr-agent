@@ -20,7 +20,7 @@ export const AGENT_CONFIG = {
   // Counts settings
   CONTACTS_TO_SCRAPE: "*",
   CONTACTS_TO_VERIFY: "*",
-  CONTACTS_TO_SEND: "*",
+  CONTACTS_TO_SEND: 500,
   
 }
 
@@ -46,11 +46,11 @@ Réponds : true ou false: [explication si false]
 // content = corps complet (intro + CTA + signature)
 export const EMAIL_TEMPLATE = [
     {
-        object: "Recherche {{source_query}} Freelance - {{company}}",
+        object: "Recherche Freelance - {{company}}",
         content: `
 Bonjour,
 
-Nous sommes à la recherche d'un(e) {{source_query}} en freelance pour nous assister sur les prochains mois.
+Nous sommes à la recherche d'un freelance en remote pour nous assister sur les prochains mois.
 
 Ayant trouvé votre profil sur {{url}}, nous pensons que vous pourriez être un bon match pour nos besoins.
 

@@ -50,27 +50,13 @@ async function getVerifiedContacts() {
 }
 
 /**
- * 1.1 Supabase : Sélectionner la première identité active
+ * 1.1 Supabase : Sélectionner une identité active aléatoirement
  */
-async function getFirstActiveIdentity() {
-  const rows = await supabaseSelect('identities', 'active', true, 1, 'created_at', true);
-  return rows?.[0] ?? null;
-}
-
-/**
- * 1.2 Supabase : Récupère l'identité liée au contact, fallback sur première active
- */
-async function getIdentityForContact(contact) {
-  if (contact?.identity_id) {
-    const linked = await supabaseSelect('identities', 'id', contact.identity_id, 1);
-    if (linked?.[0]) {
-      return { identity: linked[0], fromLinkedIdentity: true };
-    }
-  }
-
-  const active = await getFirstActiveIdentity();
-  if (!active) return { identity: null, fromLinkedIdentity: false };
-  return { identity: active, fromLinkedIdentity: false };
+async function getRandomActiveIdentity() {
+  const activeIdentities = await supabaseSelect('identities', 'active', true, 1000, 'created_at', true);
+  if (!activeIdentities.length) return null;
+  const randomIndex = Math.floor(Math.random() * activeIdentities.length);
+  return activeIdentities[randomIndex];
 }
 
 /**
@@ -196,6 +182,7 @@ async function sendEmailToContact(contact, emailRecord, identity, domainName, lo
   if (!from) {
     throw new Error('Identité expéditeur manquante (email requis)');
   }
+  const senderAddress = from.match(/<([^>]+)>/)?.[1] || from;
 
   const { text, html } = buildEmailBodies(emailRecord.content);
 
@@ -214,7 +201,7 @@ async function sendEmailToContact(contact, emailRecord, identity, domainName, lo
     used_domain: domainName,
     error: null
   });
-  console.log(`${logPrefix} ✓ Email envoyé à ${contact.email} via ${domainName}`);
+  console.log(`${logPrefix} ✓ Email envoyé via ${senderAddress}`);
 }
 
 // --- Exécution principale ---
@@ -241,15 +228,15 @@ async function sendEmailToContact(contact, emailRecord, identity, domainName, lo
     const progress = `[${i + 1}/${total}]`;
 
     try {
-      const { identity, fromLinkedIdentity } = await getIdentityForContact(contact);
+      const identity = await getRandomActiveIdentity();
       if (!identity) {
-        throw new Error('Aucune identité trouvée (liée ou active) pour l\'expéditeur');
+        throw new Error('Aucune identité active trouvée pour l\'expéditeur');
       }
 
       console.log(`${progress} --- Contact: ${contact.email} ---`);
       await supabaseUpdate('contacts', 'id', contact.id, { status: 'processing' });
 
-      if (!fromLinkedIdentity && !contact.identity_id) {
+      if (!contact.identity_id) {
         await supabaseUpdate('contacts', 'id', contact.id, { identity_id: identity.id });
         contact.identity_id = identity.id;
       }
