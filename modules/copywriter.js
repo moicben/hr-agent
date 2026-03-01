@@ -72,7 +72,7 @@ function repairJsonControlChars(input) {
 }
 
 /**
- * 1. Récupère les contacts avec status "enriched" 
+ * 1. Récupère les contacts avec status "enriched"  
  */
 async function getEnrichedContacts() {
   const limitRaw = AGENT_CONFIG.CONTACTS_TO_COPYWRITE ?? 5;
