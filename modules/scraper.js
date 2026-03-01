@@ -37,39 +37,6 @@ export async function extractQueries(filePath) {
     .filter(line => line.length > 0);
 }
 
-/**
- * Déplace une query traitée de input.txt vers le haut de input_historic.txt.
- */
-export async function moveQueryToHistoric(query) {
-  const normalizedQuery = query.trim();
-  if (!normalizedQuery) return;
-
-  const inputContent = await fs.readFile(INPUT_FILE, 'utf8');
-  const inputLines = inputContent.split('\n');
-  const queryIndex = inputLines.findIndex(line => line.trim() === normalizedQuery);
-
-  if (queryIndex !== -1) {
-    inputLines.splice(queryIndex, 1);
-    await fs.writeFile(INPUT_FILE, inputLines.join('\n').replace(/\n+$/, '\n'), 'utf8');
-  }
-
-  let historicContent = '';
-  try {
-    historicContent = await fs.readFile(HISTORIC_FILE, 'utf8');
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-
-  const historicLines = historicContent
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0 && line !== normalizedQuery);
-
-  const newHistoricContent = [normalizedQuery, ...historicLines].join('\n');
-  await fs.writeFile(HISTORIC_FILE, `${newHistoricContent}\n`, 'utf8');
-}
-
-
 export async function waitRandomRequestDelay() {
   const minDelay = AGENT_CONFIG.REQUEST_DELAY_MIN_MS ?? 1000;
   const maxDelay = AGENT_CONFIG.REQUEST_DELAY_MAX_MS ?? 5000;
@@ -141,11 +108,11 @@ export async function extractSerpResultsEmails(searchStr, query, domain) {
 }
 
 
-// --- Étape 3 : Stockage Supabase ---
+// --- Étape 3 : Stockage dans Supabase ---
 
 /**
- * Insère les contacts dans Supabase (table "contacts"), status "new".
- * Ignore les emails déjà présents en base.
+ * Insère les contacts dans Supabase (table "contacts"), status "new"
+ * Ignore les emails déjà présents en base ou les contacts déjà traités.
  * additional_data : title, description, url.
  * @returns Nombre d'emails effectivement insérés
  */
@@ -178,6 +145,41 @@ export async function storeContacts(contacts, source_query) {
   return inserted;
 }
 
+
+// --- Étape 4 : Déplacement des queries traitées ---
+
+/**
+ * Déplace une query traitée de input.txt vers le haut de input_historic.txt.
+ */
+export async function moveQueryToHistoric(query) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return;
+
+  const inputContent = await fs.readFile(INPUT_FILE, 'utf8');
+  const inputLines = inputContent.split('\n');
+  const queryIndex = inputLines.findIndex(line => line.trim() === normalizedQuery);
+
+  if (queryIndex !== -1) {
+    inputLines.splice(queryIndex, 1);
+    await fs.writeFile(INPUT_FILE, inputLines.join('\n').replace(/\n+$/, '\n'), 'utf8');
+  }
+
+  let historicContent = '';
+  try {
+    historicContent = await fs.readFile(HISTORIC_FILE, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  const historicLines = historicContent
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && line !== normalizedQuery);
+
+  const newHistoricContent = [normalizedQuery, ...historicLines].join('\n');
+  await fs.writeFile(HISTORIC_FILE, `${newHistoricContent}\n`, 'utf8');
+}
+
 // --- Exécution principale ---
 
 (async function main() {
@@ -185,9 +187,11 @@ export async function storeContacts(contacts, source_query) {
   let totalExtracted = 0;
   let totalInserted = 0;
 
+  // Boucle principale de scraping ---
   for (const query of queries) {
     console.log(`\n--- Query: "${query}" ---\n`);
 
+    // Extraction des emails via SearXNG ---
     const resultsArrays = [];
     for (const domain of EMAIL_DOMAINS) {
       const searchStr = `"${query}" ("${domain}")`;
@@ -195,6 +199,7 @@ export async function storeContacts(contacts, source_query) {
       resultsArrays.push(contacts);
     }
 
+    // Déduplication des emails ---
     const seen = new Set();
     const contacts = resultsArrays.flat().filter(c => {
       const email = c.email.toLowerCase();
@@ -202,7 +207,8 @@ export async function storeContacts(contacts, source_query) {
       seen.add(email);
       return true;
     });
-
+    
+    // Stockage des contacts dans Supabase ---
     totalExtracted += contacts.length;
 
     if (contacts.length > 0) {
@@ -211,14 +217,18 @@ export async function storeContacts(contacts, source_query) {
       console.log(`Extraits: ${contacts.length} | Insérés: ${inserted}`);
     }
 
+    // Déplacement de la query traitée vers le haut de input_historic.txt ---
     await moveQueryToHistoric(query);
   }
 
+  // Récapitulation des résultats ---
   console.log('\n--- Récap final ---');
   console.log(`Queries traitées: ${queries.length}`);
   console.log(`Emails extraits (total): ${totalExtracted}`);
   console.log(`Emails insérés (total): ${totalInserted}`);
   console.log('Scraping terminé.');
+
+  // Gestion des erreurs ---
 })().catch(err => {
   console.error('Erreur fatale:', err?.message || err);
   process.exit(1);

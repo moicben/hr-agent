@@ -1,3 +1,24 @@
+intégration logiciel
+migration logiciel
+évolution logiciel
+mise à jour logiciel
+maintenance logiciel
+optimisation logiciel
+débogage logiciel
+tests logiciels
+codage logiciel
+programmation logiciel
+développement logiciel
+chasse talents informatique
+recrutement informatique
+postes informatiques
+emplois informatiques
+carrières informatiques
+métiers informatiques
+compétences informatiques
+expertise informatique
+conseil informatique
+consultation informatique
 formation informatique
 maintenance informatique
 services informatiques
@@ -242,27 +263,6 @@ exploitation données
 traitement données
 analyse données
 déploiement logiciel
-intégration logiciel
-migration logiciel
-évolution logiciel
-mise à jour logiciel
-maintenance logiciel
-optimisation logiciel
-débogage logiciel
-tests logiciels
-codage logiciel
-programmation logiciel
-développement logiciel
-chasse talents informatique
-recrutement informatique
-postes informatiques
-emplois informatiques
-carrières informatiques
-métiers informatiques
-compétences informatiques
-expertise informatique
-conseil informatique
-consultation informatique
 protection numérique
 sécurité numérique
 cosmos numériques
