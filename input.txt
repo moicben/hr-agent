@@ -1,13 +1,4 @@
-déploiement logiciel
-analyse données
-traitement données
-exploitation données
-valorisation données
-gestion données
-stockage données
-sauvegarde données
-archivage données
-qualification données
+développeur
 segmentation données
 classification données
 catégorisation données

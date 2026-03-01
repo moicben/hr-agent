@@ -58,12 +58,15 @@ export async function extractSerpResultsEmails(searchStr, query, domain) {
 
   while (pageNum <= AGENT_CONFIG.PAGES_COUNT) {
     let organic = [];
+    let respondingEngines = [];
     try {
-      organic = await searchSearxng({
+      const searxngResponse = await searchSearxng({
         query: searchStr,
         page: pageNum,
         language: 'fr-FR'
       });
+      organic = searxngResponse.results;
+      respondingEngines = searxngResponse.engines;
     } catch (error) {
       console.error(`[SearXNG] Indisponible (query: "${query}", page: ${pageNum}): ${error?.message || error}`);
       throw error;
@@ -96,7 +99,8 @@ export async function extractSerpResultsEmails(searchStr, query, domain) {
       });
     }
 
-    console.log(`Extraits: ${newEmailsCount} | page: ${pageNum} | domain: ${domain}`);
+    const enginesLabel = respondingEngines.length > 0 ? respondingEngines.join(', ') : 'inconnu';
+    console.log(`Extraits: ${newEmailsCount} | page: ${pageNum} | domain: ${domain} | moteurs: ${enginesLabel}`);
 
     // Arrêt si 0 ou 1 résultat, ou aucun nouvel email sur cette page
     if (organic.length <= 1 || newEmailsCount === 0) break;
